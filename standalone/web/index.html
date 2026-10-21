@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>CAM Monitor</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font:15px system-ui, sans-serif}
+main{position:fixed;inset:0;display:grid;place-items:center}
+video{width:100%;height:100%;object-fit:contain;background:black}
+#msg{position:absolute;bottom:calc(env(safe-area-inset-bottom) + 18px);max-width:92vw;
+background:#111c;border:1px solid #444;padding:10px 16px;border-radius:12px;text-align:center}
+</style>
+</head>
+<body>
+<main><video autoplay muted playsinline></video><div id="msg">Warte auf Kamera-Hardwarepipeline …</div></main>
+<script>
+'use strict';
+async function refresh() {
+  const msg=document.getElementById('msg');
+  try {
+    const r=await fetch('/api/status',{cache:'no-store'});
+    if (!r.ok) throw Error('Status HTTP '+r.status);
+    const state=await r.json();
+    msg.textContent=state.videoReady ? 'H.264-Videotransport wird verbunden …'
+      : 'Standalone gestartet · HDMI/H.264 noch in Entwicklung';
+  } catch(e) { msg.textContent='Verbindung fehlgeschlagen: '+e.message; }
+}
+refresh();
+</script>
+</body></html>
