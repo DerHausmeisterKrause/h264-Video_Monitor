@@ -1,4 +1,4 @@
-name: Standalone Compile (H.264-only)
+name: Standalone H264 Firmware
 
 on:
   push:
@@ -9,40 +9,120 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: standalone-h264-firmware
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Checkout standalone firmware
-        uses: actions/checkout@v4
-
-      - name: Assert standalone contains no MJPEG implementation
+      - uses: actions/checkout@v4
+      - name: Determine release version
+        id: version
+        shell: bash
         run: |
           set -euo pipefail
-          if grep -RinE 'capture_mjpeg|VIDEO_PAYLOAD_JPEG|CONFIG_KVM_JPEG' standalone/main; then
-            echo 'Unexpected MJPEG code in the standalone firmware' >&2
+          version="$(tr -d '[:space:]' < standalone/VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || exit 1
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          tag="v$version"
+          existing="$(git ls-remote --tags --refs origin "refs/tags/$tag" | cut -f1)"
+          if [[ -n "$existing" && "$existing" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag $tag already points to another commit; increment standalone/VERSION"
             exit 1
           fi
-          echo 'No MJPEG code compiled.'
 
-      - name: ESP-IDF v6.1 compile
+      - name: Check source and H264-only policy
+        run: |
+          set -euo pipefail
+          python3 -m py_compile standalone/scripts/prepare.py
+          grep -q 'capture_codec_h264' standalone/video/capture_loop.c
+          ! grep -E 'capture_codec_mjpeg|VIDEO_PAYLOAD_JPEG' standalone/video/capture_loop.c
+          node --version
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('standalone/web/index.html').read_text()
+          Path('/tmp/cammon.js').write_text(s.split('<script>', 1)[1].split('</script>', 1)[0])
+          PY
+          node --check /tmp/cammon.js
+
+      - name: Fetch HDMI/CSI and H264 transport drivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --recursive https://github.com/espkvm/espkvm.git .upstream/espkvm
+          cd .upstream/espkvm
+          git checkout --detach 1983a0adf2474e96026a7f46357f7812eb5e6960
+          git submodule update --init --recursive
+          python3 "$GITHUB_WORKSPACE/standalone/scripts/prepare.py" "$PWD"
+
+      - name: Compile and merge ESP32-P4 Rev3 image with ESP-IDF 6.1
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v6.1
           target: esp32p4
           command: >-
-            cd standalone &&
-            idf.py -B build
-            -D SDKCONFIG=build/sdkconfig
-            -D SDKCONFIG_DEFAULTS=sdkconfig.defaults
-            build
+            cd .upstream/espkvm &&
+            git config --global --add safe.directory "$PWD" &&
+            idf.py -B build.cam-nano-rev3
+            -D SDKCONFIG=build.cam-nano-rev3/sdkconfig
+            -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/nano_p4.defaults;boards/nano_p4_rev3.defaults"
+            build &&
+            idf.py -B build.cam-nano-rev3 merge-bin -o cammonitor-merged.bin
 
-      - name: Print binary information
+      - name: Prepare firmware files
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
         run: |
           set -euo pipefail
-          test -s standalone/build/cammonitor.bin
-          ls -lh standalone/build/cammonitor.bin
-          echo 'Prototype only: CSI/H.264 and WebRTC still pending. No release created.'
+          build=".upstream/espkvm/build.cam-nano-rev3"
+          test -s "$build/cammonitor.bin"
+          test -s "$build/cammonitor-merged.bin"
+          mkdir -p dist
+          cp "$build/cammonitor.bin" "dist/CAM-Monitor-${TAG}-p4-nano-rev3-app.bin"
+          cp "$build/cammonitor-merged.bin" "dist/CAM-Monitor-${TAG}-p4-nano-rev3-merged.bin"
+          ( cd dist && sha256sum *.bin > SHA256SUMS.txt )
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone-h264-${{ steps.version.outputs.tag }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish standalone candidate GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          Experimental **CAM Monitor standalone H.264-only** firmware.
+          Waveshare ESP32-P4-NANO, chip Rev 3.x; HDMI -> TC358743 -> CSI -> hardware H.264 -> WebRTC -> iPhone.
+
+          No ESP-KVM user interface, no login, no MJPEG encoder, no codec fallback, no recording or USB-KVM services.
+          Starts passwordless hotspot `CAM-MONITOR`, open `http://192.168.4.1/`.
+          Anyone nearby can connect and watch: only operate in a controlled environment.
+
+          **UNTESTED ON ACTUAL HARDWARE.** A successful CI compile does not confirm HDMI capture, iOS WebRTC connectivity, FPS or low latency.
+          Treat this as a prerelease and retain a copy of the working original firmware.
+
+          USB flashing: use the **-merged.bin** file at offset **0x0** (full flash, may clear settings).
+          The **-app.bin** file is NOT a merged image and must not be flashed at 0x0.
+          Based on selected ESP-KVM hardware driver code, Apache-2.0 (copyright notices preserved).
+          NOTES
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --notes-file release-notes.md --prerelease
+          else
+            gh release create "$TAG" dist/* --prerelease --target "$GITHUB_SHA" \
+              --title "CAM Monitor $TAG – standalone H.264" --notes-file release-notes.md
+          fi
