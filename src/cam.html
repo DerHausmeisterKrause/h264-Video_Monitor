@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><title>CAM Monitor</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;background:#000;color:white;font:14px system-ui;overflow:hidden}video{position:fixed;inset:0;width:100vw;height:100dvh;object-fit:contain;background:#000}button,select{font:inherit;background:#242830;color:white;border:1px solid #555;padding:9px;border-radius:9px}#bar{position:fixed;top:env(safe-area-inset-top);left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:12px;transition:opacity .3s}#bar.hide{opacity:0;pointer-events:none}#status{background:#0009;padding:10px;border-radius:8px}#panel{position:fixed;top:12px;right:12px;width:min(340px,calc(100vw - 24px));max-height:90dvh;overflow:auto;background:#202126;border:1px solid #555;border-radius:16px;padding:18px}#panel[hidden]{display:none}label{display:block;margin-top:14px}select{display:block;width:100%;margin-top:5px}#message{position:fixed;bottom:15px;left:5%;width:90%;text-align:center;text-shadow:0 1px 3px black;pointer-events:none}#error{color:#ffaaaa}
+</style></head><body>
+<video id="video" autoplay muted playsinline></video>
+<div id="bar"><span id="status">Verbinde …</span><button id="gear" aria-label="Einstellungen">⚙</button></div>
+<div id="message"></div>
+<section id="panel" hidden><h3>Videoeinstellungen <button id="close">×</button></h3>
+<label>H.264-Bitrate <select id="bitrate"><option value="1500">1,5 Mbit/s</option><option value="2500">2,5 Mbit/s</option><option value="4000">4 Mbit/s</option><option value="6000">6 Mbit/s</option><option value="8000">8 Mbit/s</option><option value="12000">12 Mbit/s</option></select></label>
+<label>Max. FPS <select id="fps"><option>15</option><option>20</option><option>24</option><option>30</option></select></label>
+<label>HDMI-Auflösung (EDID) <select id="edid"><option value="0">Auto</option><option value="1">1080p/30</option><option value="2">720p</option></select></label>
+<p>EDID benötigt einen Neustart und garantiert nicht, dass die Kamera die Auflösung übernimmt.</p><button id="save">Speichern</button><p id="error"></p><a style="color:#9cf" href="/">ESP-KVM Verwaltung</a></section>
+<script>
+(()=>{'use strict';
+const $=id=>document.getElementById(id),v=$('video'),p=$('panel'),bar=$('bar'),hdr={'Content-Type':'application/json','X-ESP-KVM':'1'};
+let pc=null,id=null,retryTimer=null,hideTimer=null,frameTimer=null,active=true,generation=0,current=null,lastFrame=0,frames=0,lastFrames=0;
+const msg=s=>$('message').textContent=s, status=s=>$('status').textContent=s;
+function reveal(){bar.classList.remove('hide');clearTimeout(hideTimer);if(p.hidden)hideTimer=setTimeout(()=>bar.classList.add('hide'),3500)}
+async function api(path,options={}){const r=await fetch(path,{cache:'no-store',...options});if(r.status===401)throw Error('Bitte unter / anmelden.');if(!r.ok){const e=await r.json().catch(()=>({}));throw Error(e.error||('HTTP '+r.status))}return r.json()}
+function close(){clearTimeout(frameTimer);frameTimer=null;const old=id;id=null;if(old!==null)fetch('/api/v1/video/webrtc?id='+encodeURIComponent(old),{method:'DELETE',headers:hdr,keepalive:true}).catch(()=>{});if(pc){pc.ontrack=null;pc.onconnectionstatechange=null;pc.close();pc=null}v.srcObject=null}
+function retry(error){if(!active||document.hidden)return;close();msg(error);status('Verbinde erneut …');clearTimeout(retryTimer);retryTimer=setTimeout(start,2500)}
+function onFrame(){if(!active||document.hidden)return;frames++;lastFrame=performance.now();v.requestVideoFrameCallback(onFrame)}
+async function start(){if(!active||document.hidden)return;const gen=++generation;clearTimeout(retryTimer);close();try{
+if(typeof RTCPeerConnection==='undefined')throw Error('WebRTC nicht verfügbar.');
+const values=await api('/api/v1/settings');if(gen!==generation||!active)return;if(values.vid_codec!==1)throw Error('Bitte H.264 in ESP-KVM aktivieren.');if(values.webrtc_enable===false)throw Error('WebRTC in ESP-KVM aktivieren.');
+const peer=new RTCPeerConnection({iceServers:[]});pc=peer;const receiver=peer.addTransceiver('video',{direction:'recvonly'});const codecs=RTCRtpReceiver.getCapabilities?.('video')?.codecs.filter(c=>c.mimeType.toLowerCase()==='video/h264')||[];if(codecs.length&&receiver.setCodecPreferences)receiver.setCodecPreferences(codecs);
+peer.ontrack=e=>{if(peer!==pc||e.track.kind!=='video')return;try{if('jitterBufferTarget'in e.receiver)e.receiver.jitterBufferTarget=0}catch{}v.srcObject=new MediaStream([e.track]);v.play().catch(()=>msg('Auf das Bild tippen, um Video zu starten.'));if(v.requestVideoFrameCallback)v.requestVideoFrameCallback(onFrame);else lastFrame=performance.now()};
+peer.onconnectionstatechange=()=>{if(peer===pc&&peer.connectionState==='failed')retry('Verbindung unterbrochen')};
+await peer.setLocalDescription(await peer.createOffer());const response=await api('/api/v1/video/webrtc',{method:'POST',headers:hdr,body:JSON.stringify({sdp:peer.localDescription.sdp})});if(gen!==generation||peer!==pc){fetch('/api/v1/video/webrtc?id='+response.id,{method:'DELETE',headers:hdr}).catch(()=>{});return}
+id=response.id;await peer.setRemoteDescription({type:'answer',sdp:response.sdp});status('H.264 · LIVE');msg('');frameTimer=setTimeout(()=>{if(lastFrame===0)retry('Kein Videobild empfangen')},7000)
+}catch(e){if(gen===generation)retry(e.message||String(e))}}
+async function settings(){try{current=await api('/api/v1/settings');for(const [name,key] of [['bitrate','h264_kbps'],['fps','vid_fps_max'],['edid','edid_prof']]){const el=$(name),value=String(current[key]);if(![...el.options].some(o=>o.value===value)){const option=document.createElement('option');option.value=value;option.textContent=value+' (aktuell)';el.add(option)}el.value=value}}catch(e){$('error').textContent=e.message}}
+$('gear').onclick=()=>{p.hidden=false;reveal();settings()};$('close').onclick=()=>{p.hidden=true;reveal()};
+$('save').onclick=async()=>{const next={h264_kbps:+$('bitrate').value,vid_fps_max:+$('fps').value,edid_prof:+$('edid').value},restart=current&&current.edid_prof!==next.edid_prof;try{current=await api('/api/v1/settings',{method:'PUT',headers:hdr,body:JSON.stringify(next)});p.hidden=true;reveal();if(restart&&confirm('Neustart für neue EDID?')){await fetch('/api/v1/system/restart',{method:'POST',headers:hdr});retry('Gerät startet neu')}}catch(e){$('error').textContent=e.message}};
+v.onclick=()=>{reveal();if(v.paused)v.play().catch(()=>{})};
+document.addEventListener('visibilitychange',()=>{generation++;if(document.hidden){close();clearTimeout(retryTimer)}else start()});
+window.addEventListener('pagehide',()=>{active=false;generation++;close();clearTimeout(retryTimer)});
+window.addEventListener('pageshow',()=>{if(!active){active=true;start()}});
+setInterval(()=>{if(!active||document.hidden)return;if(lastFrame){status(v.videoWidth+'×'+v.videoHeight+' · '+(frames-lastFrames)+' FPS · H.264');if(performance.now()-lastFrame>5000)retry('Bild steht – Neustart der Verbindung')}lastFrames=frames},1000);
+reveal();start();
+})();
+</script></body></html>
