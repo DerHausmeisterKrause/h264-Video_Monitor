@@ -4,6 +4,8 @@
  */
 #include <string.h>
 #include "esp_check.h"
+#include "esp_heap_caps.h"
+#include "sdkconfig.h"
 #include "esp_event.h"
 #include "esp_hosted.h"
 #include "esp_log.h"
@@ -57,4 +59,17 @@ esp_err_t cam_wifi_start_open_ap(void)
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "ap start");
     ESP_LOGW(TAG, "OPEN hotspot CAM-MONITOR (no password); video will be visible to nearby users");
     return ESP_OK;
+}
+
+/*
+ * ESP-KVM contributors, Apache-2.0: move esp-hosted DMA allocations to PSRAM
+ * to preserve internal RAM for the H.264 encoder. Standalone implementation.
+ */
+void *__real_eh_host_port_dma_alloc(size_t size);
+void *__wrap_eh_host_port_dma_alloc(size_t size)
+{
+    const size_t line = CONFIG_CACHE_L2_CACHE_LINE_SIZE;
+    void *p = heap_caps_malloc((size + line - 1) & ~(line - 1),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT | MALLOC_CAP_CACHE_ALIGNED);
+    return p ? p : __real_eh_host_port_dma_alloc(size);
 }
