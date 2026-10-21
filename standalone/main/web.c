@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include <stddef.h>
+#include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "web.h"
