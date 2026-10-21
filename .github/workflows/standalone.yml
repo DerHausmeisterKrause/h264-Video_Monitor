@@ -1,0 +1,48 @@
+name: Standalone Compile (H.264-only)
+
+on:
+  push:
+    branches: [standalone-h264]
+    paths:
+      - 'standalone/**'
+      - '.github/workflows/standalone.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout standalone firmware
+        uses: actions/checkout@v4
+
+      - name: Assert standalone contains no MJPEG implementation
+        run: |
+          set -euo pipefail
+          if grep -RinE 'capture_mjpeg|VIDEO_PAYLOAD_JPEG|CONFIG_KVM_JPEG' standalone/main; then
+            echo 'Unexpected MJPEG code in the standalone firmware' >&2
+            exit 1
+          fi
+          echo 'No MJPEG code compiled.'
+
+      - name: ESP-IDF v6.1 compile
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32p4
+          command: >-
+            cd standalone &&
+            idf.py -B build
+            -D SDKCONFIG=build/sdkconfig
+            -D SDKCONFIG_DEFAULTS=sdkconfig.defaults
+            build
+
+      - name: Print binary information
+        run: |
+          set -euo pipefail
+          test -s standalone/build/cammonitor.bin
+          ls -lh standalone/build/cammonitor.bin
+          echo 'Prototype only: CSI/H.264 and WebRTC still pending. No release created.'
