@@ -1,6 +1,6 @@
 # CAM Monitor – HDMI → WLAN → iPhone
 
-> **Aktuelles Entwicklungsziel (21.10.2026): echte Standalone-Firmware mit ausschließlich Hardware-H.264.** Die bisherige v0.1.0 ist nur ein ESP-KVM-Weboberflächen-Prototyp und entspricht noch nicht dem gewünschten schlanken Aufbau. Der neue Stand entsteht auf dem Branch [standalone-h264](https://github.com/DerHausmeisterKrause/h264-Video_Monitor/tree/standalone-h264/standalone) und wird erst nach erfolgreicher Integration von HDMI/CSI/H.264/WebRTC als Release bereitgestellt. **Nicht die alte v0.1.0 für die neue Standalone-Firmware halten.**
+> **Neue Standalone-Firmware veröffentlicht: [v0.2.0-rc1](https://github.com/DerHausmeisterKrause/h264-Video_Monitor/releases/tag/v0.2.0-rc1).** Eigenes Startprogramm und eigene iPhone-Weboberfläche, ESP32-C6-WLAN-Hotspot ohne Passwort, Hardware-H.264 über TC358743/CSI und WebRTC – **ohne MJPEG-Fallback**. Der GitHub-ESP-IDF-Build ist erfolgreich, der reale Nikon-/iPhone-Test steht noch aus. **Die ältere v0.1.0 ist nur ein ESP-KVM-Weboberflächen-Prototyp und nicht die Standalone-Firmware.** Quellcode: [standalone-h264](https://github.com/DerHausmeisterKrause/h264-Video_Monitor/tree/standalone-h264/standalone).
 
 **Status: v0.1 Entwickler-Prototyp – noch nicht auf der Hardware kompiliert oder getestet.**
 
