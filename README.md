@@ -33,6 +33,22 @@ bash scripts/build-linux.sh
 Das Skript klont `espkvm/espkvm` einschließlich Submodule, checkt die festgelegte Revision
 `1983a0adf2474e96026a7f46357f7812eb5e6960` (ESP-KVM 0.68.0) aus, fügt die separate `/cam`-Route hinzu und ruft ESP-IDF für `nano_p4_rev3` auf.
 
+## Firmware über GitHub Actions bauen und veröffentlichen
+
+**Manueller Build:** [Actions → Build & Release Firmware](https://github.com/DerHausmeisterKrause/h264-Video_Monitor/actions/workflows/release.yml) → **Run workflow** → Branch `main` → **Run workflow**.
+
+Der Workflow läuft auf GitHub, installiert ESP-IDF 6.1 im offiziellen Espressif-Build-Container, kompiliert für das Waveshare ESP32-P4-NANO mit **Chiprevision 3.x**, erzeugt zwei Dateien und veröffentlicht nach erfolgreichem Build ein GitHub-Release:
+
+- `cammonitor-v0.1.0-p4-nano-rev3-merged.bin`: vollständiges USB-Flash-Image ab Adresse `0x0`; kann bestehende Einstellungen überschreiben.
+- `cammonitor-v0.1.0-p4-nano-rev3-ota.bin`: App-Image für eine *kompatible* vorhandene ESP-KVM-Partitionierung, **nicht** für Adresse `0x0`.
+- `SHA256SUMS.txt`: Prüfsummen.
+
+Die **aktuelle Projektversion** steht in der Datei [`VERSION`](VERSION). Zum Beispiel nach Änderung von `0.1.0` auf `0.1.1` erzeugt der nächste manuelle erfolgreiche Build das Release `v0.1.1` mit entsprechend benannten Firmwaredateien. Bereits veröffentlichte Versionen bleiben an ihrem ursprünglichen Git-Commit; ohne Versionswechsel kann keine neue Version aus einem anderen Commit unter demselben Tag erstellt werden.
+
+[GitHub Releases öffnen](https://github.com/DerHausmeisterKrause/h264-Video_Monitor/releases)
+
+**Hinweis:** Die Action ist eingerichtet, ein erfolgreicher ESP-IDF-Build und ein Flash-/Kameratest auf echter Hardware stehen noch aus. Nur ein erfolgreicher Build erstellt eine Veröffentlichung.
+
 ## Flashen
 
 **Erst verwenden, wenn der Build erfolgreich durchgelaufen ist** und die Hardware-Revision mit `esptool` tatsächlich als 3.x bestätigt ist.
