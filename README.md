@@ -1,5 +1,7 @@
 # CAM Monitor – HDMI → WLAN → iPhone
 
+> **Aktuelles Entwicklungsziel (21.10.2026): echte Standalone-Firmware mit ausschließlich Hardware-H.264.** Die bisherige v0.1.0 ist nur ein ESP-KVM-Weboberflächen-Prototyp und entspricht noch nicht dem gewünschten schlanken Aufbau. Der neue Stand entsteht auf dem Branch [standalone-h264](https://github.com/DerHausmeisterKrause/h264-Video_Monitor/tree/standalone-h264/standalone) und wird erst nach erfolgreicher Integration von HDMI/CSI/H.264/WebRTC als Release bereitgestellt. **Nicht die alte v0.1.0 für die neue Standalone-Firmware halten.**
+
 **Status: v0.1 Entwickler-Prototyp – noch nicht auf der Hardware kompiliert oder getestet.**
 
 Minimalistische H.264/WebRTC-Livebildoberfläche für **Waveshare ESP32-P4-NANO (Chiprevision 3.x)** mit **TC358743 HDMI-zu-CSI-Adapter** und beispielsweise einer Nikon D3200.
