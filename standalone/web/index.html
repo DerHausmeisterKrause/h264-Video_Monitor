@@ -3,31 +3,159 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#000000">
 <title>CAM Monitor</title>
 <style>
 *{box-sizing:border-box}
-html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font:15px system-ui, sans-serif}
-main{position:fixed;inset:0;display:grid;place-items:center}
-video{width:100%;height:100%;object-fit:contain;background:black}
-#msg{position:absolute;bottom:calc(env(safe-area-inset-bottom) + 18px);max-width:92vw;
-background:#111c;border:1px solid #444;padding:10px 16px;border-radius:12px;text-align:center}
+html,body{margin:0;width:100%;height:100%;background:#000;color:white;font:14px system-ui,sans-serif;overflow:hidden}
+video{position:fixed;inset:0;width:100vw;height:100dvh;object-fit:contain;background:#000}
+#bar{position:fixed;inset:env(safe-area-inset-top) 0 auto 0;display:flex;align-items:center;justify-content:space-between;padding:12px;transition:opacity .25s}
+#bar.hidden{opacity:0;pointer-events:none}
+#status{background:#121212b9;border:1px solid #4449;border-radius:9px;padding:9px 13px}
+button,select{background:#292c32;color:white;border:1px solid #666;border-radius:10px;padding:10px;font:inherit}
+button{cursor:pointer}
+#panel{position:fixed;top:max(12px,env(safe-area-inset-top));right:12px;max-height:90dvh;overflow:auto;width:min(340px,calc(100vw - 24px));border:1px solid #555;background:#16181ded;border-radius:17px;padding:19px;box-shadow:0 10px 30px #0007}
+#panel[hidden]{display:none}
+label{display:block;margin:18px 0}
+select{display:block;width:100%;margin-top:6px}
+#message{position:fixed;bottom:max(15px,env(safe-area-inset-bottom));left:10%;width:80%;text-align:center;background:#000b;border-radius:10px;padding:8px;pointer-events:none}
+#message:empty{display:none}
+.small{font-size:12px;color:#bbb;line-height:1.5}
+#err{color:#ff9a9a}
 </style>
-</head>
-<body>
-<main><video autoplay muted playsinline></video><div id="msg">Warte auf Kamera-Hardwarepipeline …</div></main>
+</head><body>
+<video id="video" autoplay muted playsinline></video>
+<div id="bar"><span id="status">Verbinde …</span><button id="gear" aria-label="Videoeinstellungen">⚙</button></div>
+<div id="message">CAM Monitor startet …</div>
+<div id="panel" hidden>
+  <h3>Videoeinstellungen <button id="close" style="float:right" aria-label="Schließen">×</button></h3>
+  <p class="small">Nur H.264 · Hardware-Encoding · WLAN-Hotspot</p>
+  <label>H.264 Bitrate
+  <select id="bitrate">
+    <option value="1000">1 Mbit/s</option><option value="2000">2 Mbit/s</option>
+    <option value="3000">3 Mbit/s</option><option value="4000">4 Mbit/s</option>
+    <option value="6000">6 Mbit/s</option><option value="8000">8 Mbit/s</option>
+    <option value="12000">12 Mbit/s</option>
+  </select></label>
+  <label>Maximale Bildrate
+  <select id="fps"><option>15</option><option>20</option><option>24</option>
+  <option>25</option><option>30</option><option>40</option></select></label>
+  <label>HDMI EDID
+  <select id="edid"><option value="0">Automatisch</option><option value="1">1080p / 30</option><option value="2">720p</option></select></label>
+  <p class="small">EDID-Änderung benötigt einen Neustart. Die Kamera wählt ihre HDMI-Ausgabe selbst.</p>
+  <button id="save">Übernehmen</button><div id="err" class="small"></div>
+</div>
 <script>
-'use strict';
-async function refresh() {
-  const msg=document.getElementById('msg');
-  try {
-    const r=await fetch('/api/status',{cache:'no-store'});
-    if (!r.ok) throw Error('Status HTTP '+r.status);
-    const state=await r.json();
-    msg.textContent=state.videoReady ? 'H.264-Videotransport wird verbunden …'
-      : 'Standalone gestartet · HDMI/H.264 noch in Entwicklung';
-  } catch(e) { msg.textContent='Verbindung fehlgeschlagen: '+e.message; }
+(()=>{'use strict';
+const $=id=>document.getElementById(id);
+const video=$('video'),bar=$('bar'),panel=$('panel');
+let pc=null,session=null,nonce=0,retryTimer=0,hideTimer=0,watchdog=0,lastFrame=0,frames=0,lastCount=0,active=true,current=null;
+const info=s=>$('message').textContent=s;
+const state=s=>$('status').textContent=s;
+function reveal(){bar.classList.remove('hidden');clearTimeout(hideTimer);if(panel.hidden)hideTimer=setTimeout(()=>bar.classList.add('hidden'),3500)}
+async function fetchJson(url,opt={}) {
+  const r=await fetch(url,{cache:'no-store',...opt});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok)throw Error(data.error||('HTTP '+r.status));
+  return data;
 }
-refresh();
-</script>
-</body></html>
+function stop(){
+  clearTimeout(watchdog);watchdog=0;
+  const old=session;session=null;
+  if(old!==null)fetch('/api/v1/video/webrtc?id='+old,{method:'DELETE',keepalive:true}).catch(()=>{});
+  if(pc){pc.ontrack=null;pc.onconnectionstatechange=null;pc.close();pc=null}
+  video.srcObject=null;
+}
+function reconnect(reason){
+  if(!active||document.hidden)return;
+  nonce++;stop();clearTimeout(retryTimer);info(reason);state('Verbinde neu …');
+  retryTimer=setTimeout(connect,2200);
+}
+function frameTick(){
+  if(!active||document.hidden)return;
+  frames++;lastFrame=performance.now();
+  video.requestVideoFrameCallback(frameTick);
+}
+async function connect(){
+  if(!active||document.hidden)return;
+  const run=++nonce;
+  clearTimeout(retryTimer);stop();lastFrame=0;frames=0;lastCount=0;
+  state('Verbinde …');
+  try {
+    if(!window.RTCPeerConnection)throw Error('Safari unterstützt diesen WebRTC-Modus nicht.');
+    const peer=new RTCPeerConnection({iceServers:[]});
+    pc=peer;
+    const rx=peer.addTransceiver('video',{direction:'recvonly'});
+    const codecs=window.RTCRtpReceiver?.getCapabilities?.('video')?.codecs?.filter(c=>c.mimeType.toLowerCase()==='video/h264')||[];
+    if(codecs.length&&rx.setCodecPreferences)rx.setCodecPreferences(codecs);
+    peer.ontrack=e=>{
+      if(pc!==peer||e.track.kind!=='video')return;
+      if('jitterBufferTarget' in e.receiver){try{e.receiver.jitterBufferTarget=0}catch{}}
+      video.srcObject=new MediaStream([e.track]);
+      video.play().catch(()=>info('Bild antippen, um die Wiedergabe zu starten.'));
+      if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(frameTick);
+    };
+    peer.onconnectionstatechange=()=>{
+      if(peer===pc&&peer.connectionState==='failed')reconnect('WebRTC unterbrochen');
+    };
+    await peer.setLocalDescription(await peer.createOffer());
+    const answer=await fetchJson('/api/v1/video/webrtc',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:peer.localDescription.sdp})
+    });
+    if(pc!==peer||nonce!==run){
+      fetch('/api/v1/video/webrtc?id='+answer.id,{method:'DELETE'}).catch(()=>{});
+      return;
+    }
+    session=answer.id;
+    await peer.setRemoteDescription({type:'answer',sdp:answer.sdp});
+    state('H.264 · LIVE');info('');
+    watchdog=setTimeout(()=>{if(!lastFrame)reconnect('Kein Kamerabild – Verbindung wird erneuert')},9000);
+  } catch(e){if(nonce===run)reconnect(e.message||String(e))}
+}
+async function loadSettings(){
+  try{
+    $('err').textContent='';
+    current=await fetchJson('/api/v1/settings');
+    for(const [id,key] of [['bitrate','h264_kbps'],['fps','vid_fps_max'],['edid','edid_prof']]){
+      const elem=$(id),value=String(current[key]);
+      if(!Array.from(elem.options).some(o=>o.value===value)){
+        const opt=document.createElement('option');opt.value=value;opt.textContent=value+' (aktuell)';elem.add(opt);
+      }
+      elem.value=value;
+    }
+  }catch(e){$('err').textContent=e.message}
+}
+$('gear').onclick=()=>{panel.hidden=false;reveal();loadSettings()};
+$('close').onclick=()=>{panel.hidden=true;reveal()};
+$('save').onclick=async()=>{
+  $('err').textContent='';
+  const vals={h264_kbps:+$('bitrate').value,vid_fps_max:+$('fps').value,edid_prof:+$('edid').value};
+  const changedEdid=current&&current.edid_prof!==vals.edid_prof;
+  try{
+    current=await fetchJson('/api/v1/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(vals)});
+    panel.hidden=true;reveal();
+    if(changedEdid)info('EDID gespeichert – Gerät neu starten, damit die Kamera umschaltet.');
+  }catch(e){$('err').textContent=e.message}
+};
+video.onclick=()=>{reveal();if(video.paused)video.play().catch(()=>{})};
+document.addEventListener('visibilitychange',()=>{nonce++;if(document.hidden){stop();clearTimeout(retryTimer)}else connect()});
+window.addEventListener('pagehide',()=>{active=false;nonce++;stop();clearTimeout(retryTimer)});
+window.addEventListener('pageshow',()=>{if(!active){active=true;connect()}});
+setInterval(async()=>{
+  if(!active||document.hidden)return;
+  if(lastFrame){
+    state(video.videoWidth+'×'+video.videoHeight+' · '+(frames-lastCount)+' FPS · H.264');
+    if(performance.now()-lastFrame>6000){reconnect('Kein neues Videobild');return}
+  }else{
+    try{
+      const s=await fetchJson('/api/status');
+      if(!s.signal)info('Warte auf HDMI-Signal von der Nikon …');
+      else if(!s.h264Ready)info('Hardware-H.264 wird initialisiert …');
+    }catch{}
+  }
+  lastCount=frames;
+},1000);
+reveal();connect();
+})();
+</script></body></html>
