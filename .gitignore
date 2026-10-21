@@ -1,0 +1,7 @@
+.upstream/
+build/
+build.*/
+__pycache__/
+*.pyc
+sdkconfig
+sdkconfig.old
