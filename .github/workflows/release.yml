@@ -1,0 +1,138 @@
+name: Build & Release Firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cam-monitor-release
+  cancel-in-progress: false
+
+jobs:
+  firmware:
+    name: ESP32-P4-NANO Rev 3.x
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout CAM Monitor
+        uses: actions/checkout@v4
+
+      - name: Read and validate version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "Invalid VERSION: $VERSION (expected e.g. 0.1.0)" >&2
+            exit 1
+          fi
+          echo "number=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing CAM Monitor v$VERSION"
+
+      - name: Prevent overwriting a different release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null || true)"
+          if [[ -n "$existing" && "$existing" != "$GITHUB_SHA" ]]; then
+            echo "${TAG} already exists at ${existing}, but this run uses ${GITHUB_SHA}." >&2
+            echo "Increase VERSION before building a new release from a different commit." >&2
+            exit 1
+          fi
+
+      - name: Check overlay sources
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          python3 -m py_compile scripts/apply.py
+          bash -n scripts/build-linux.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          html = Path('src/cam.html').read_text(encoding='utf-8')
+          Path('/tmp/cammonitor.js').write_text(html.split('<script>', 1)[1].split('</script>', 1)[0])
+          PY
+          node --check /tmp/cammonitor.js
+
+      - name: Checkout pinned ESP-KVM and apply CAM Monitor
+        env:
+          VERSION: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --recursive https://github.com/espkvm/espkvm.git .upstream/espkvm
+          cd .upstream/espkvm
+          git checkout --detach 1983a0adf2474e96026a7f46357f7812eb5e6960
+          git submodule update --init --recursive
+          printf '%s\n' "$VERSION" > version.txt
+          python3 "$GITHUB_WORKSPACE/scripts/apply.py" "$PWD"
+
+      - name: Build and merge flash image (ESP-IDF v6.1)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32p4
+          command: >-
+            cd .upstream/espkvm &&
+            git config --global --add safe.directory "$PWD" &&
+            idf.py -B build.cam-nano-rev3
+            -D SDKCONFIG=build.cam-nano-rev3/sdkconfig
+            -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/nano_p4.defaults;boards/nano_p4_rev3.defaults"
+            build &&
+            idf.py -B build.cam-nano-rev3 merge-bin -o cammonitor-merged.bin
+
+      - name: Package release files
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_dir=".upstream/espkvm/build.cam-nano-rev3"
+          test -s "$build_dir/espkvm.bin"
+          test -s "$build_dir/cammonitor-merged.bin"
+          mkdir -p dist
+          cp "$build_dir/espkvm.bin" "dist/cammonitor-${TAG}-p4-nano-rev3-ota.bin"
+          cp "$build_dir/cammonitor-merged.bin" "dist/cammonitor-${TAG}-p4-nano-rev3-merged.bin"
+          (cd dist && sha256sum *.bin > SHA256SUMS.txt)
+          ls -lh dist
+
+      - name: Upload run artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cammonitor-${{ steps.version.outputs.tag }}-p4-nano-rev3
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          CAM Monitor developer preview for Waveshare ESP32-P4-NANO, silicon Rev 3.x, with TC358743 HDMI-to-CSI adapter.
+
+          - **-merged.bin:** Full flash image (bootloader, partition table and app) for a fresh USB flash at offset 0x0. Can reset the existing ESP-KVM configuration.
+          - **-ota.bin:** Application image for an existing compatible ESP-KVM partition layout; do not flash it at offset 0x0.
+          - **SHA256SUMS.txt:** Checksums for the two images.
+
+          The firmware uses the pinned ESP-KVM 0.68.0 base with the minimal `/cam` WebRTC viewer. This is a development preview and has not been validated on the actual camera hardware.
+          NOTES
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" dist/* \
+              --title "CAM Monitor $TAG (ESP32-P4-NANO Rev 3.x)" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --notes-file release-notes.md
+          fi
