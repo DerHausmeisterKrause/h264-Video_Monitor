@@ -1,0 +1,27 @@
+name: Source checks
+on:
+  push:
+  pull_request:
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python syntax
+        run: python -m py_compile scripts/apply.py
+      - name: Shell syntax
+        run: bash -n scripts/build-linux.sh
+      - name: JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('src/cam.html').read_text()
+          Path('/tmp/cam-monitor.js').write_text(text.split('<script>',1)[1].split('</script>',1)[0])
+          PY
+          node --check /tmp/cam-monitor.js
