@@ -2,6 +2,12 @@ name: Build & Release Firmware
 
 on:
   workflow_dispatch:
+  # Automatisch starten, wenn diese Build-Pipeline oder VERSION geändert wird.
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release.yml'
+      - 'VERSION'
 
 permissions:
   contents: write
@@ -35,17 +41,19 @@ jobs:
 
       - name: Prevent overwriting a different release
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          existing="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null || true)"
+          # git ls-remote reports an empty result for a missing tag; it does not
+          # accidentally capture GitHub API's JSON 404 body as a commit SHA.
+          existing="$(git ls-remote --refs --tags origin "refs/tags/${TAG}" | awk '{print $1}')"
           if [[ -n "$existing" && "$existing" != "$GITHUB_SHA" ]]; then
             echo "${TAG} already exists at ${existing}, but this run uses ${GITHUB_SHA}." >&2
-            echo "Increase VERSION before building a new release from a different commit." >&2
+            echo "Increase VERSION before publishing another revision." >&2
             exit 1
           fi
+          echo "Tag ${TAG} is available for this commit."
 
       - name: Check overlay sources
         run: |
