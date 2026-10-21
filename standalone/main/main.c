@@ -27,6 +27,9 @@ void app_main(void)
     ESP_ERROR_CHECK(r);
     ESP_ERROR_CHECK(kvm_settings_init()); /* driver settings, no UI wizard */
     kvm_caps_init();
+    /* H.264/WebRTC are hardwired: a stale NVS setting cannot disable them. */
+    ESP_ERROR_CHECK(kvm_setting_set_int("vid_codec", 1));
+    ESP_ERROR_CHECK(kvm_setting_set_int("webrtc_enable", 1));
     kvm_thermal_init(); /* thermal protection for H.264 chip */
 
     video_frame_store_init();
